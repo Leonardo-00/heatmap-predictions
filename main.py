@@ -1,8 +1,21 @@
 import os
+import ast
 import json
 import traceback
 from clearml import Task
 from logic.heatmap.heatmap import generate_heatmap
+
+def normalize_params(params: dict) -> dict:
+    for k, v in params.items():
+        if isinstance(v, str):
+            try:
+                parsed = ast.literal_eval(v)
+                # accettiamo solo strutture sensate
+                if isinstance(parsed, (list, dict, tuple)):
+                    params[k] = parsed
+            except Exception:
+                pass
+    return params
 
 def upload_artifact_safe(task, name, obj):
     """Upload sicuro con messaggi più chiari."""
@@ -25,10 +38,13 @@ def run_heatmap_task():
 
     try:
         params = task.get_parameters_as_dict(cast=True)
-        params = params["General"]
+        
+        params = normalize_params(params["General"])
         
         print("Parametri ricevuti:")
         logger.report_text(json.dumps(params, indent=2))
+        
+        print("DEBUG value_types:", params.get("value_types"), type(params.get("value_types")))
 
         result = generate_heatmap(params)
         
