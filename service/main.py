@@ -1,13 +1,23 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-import api.heatmap_service as heatmap_service
+from api.heatmap_service import router
 import uvicorn
+import logging
+
+# Configura logging su file
+logging.basicConfig(
+    filename="uvicorn.log",        # file dei log
+    level=logging.INFO,             # livello minimo da loggare
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger("uvicorn")
 
 app = FastAPI(title="Snap4City Heatmap API")
 
 
-app.include_router(heatmap_service.router, prefix="/heatmap", tags=["heatmap"])
+app.include_router(router, prefix="/heatmap", tags=["heatmap"])
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -25,5 +35,5 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 if __name__ == "__main__":
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8085, reload=True)
+    uvicorn.run("service.main:app", host="0.0.0.0", port=8085, reload=True)
 

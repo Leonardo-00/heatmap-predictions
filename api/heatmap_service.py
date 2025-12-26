@@ -1,4 +1,6 @@
-from fastapi import APIRouter, HTTPException
+import os
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from logic.heatmap.heatmap import generate_heatmap
@@ -23,7 +25,7 @@ class HeatmapRequest(BaseModel):
     model: str
     clustered: int = 0
     file: int = 1
-    broker: str | None = None
+    broker: str = None
     max_cells: int = 200000
     
     
@@ -38,3 +40,25 @@ def heatmap(req: HeatmapRequest):
 @router.get("/health")
 def health_check():
     return {"status": "Heatmap service is running"}
+
+@router.get("/logs")
+def get_logs(
+    lines: int = Query(None, description="Numero di righe da restituire, None per tutte"),
+    level: str = Query(None, description="Filtra per livello di log, es. INFO, DEBUG, ERROR")
+):
+    log_file = "uvicorn.log"
+    if not os.path.exists(log_file):
+        return JSONResponse(content={"error": "Log file not found"}, status_code=404)
+
+    with open(log_file, "r") as f:
+        all_lines = f.readlines()
+
+    if level:
+        filtered_lines = [line for line in all_lines if f"| {level.upper()} |" in line]
+    else:
+        filtered_lines = all_lines
+
+    if lines:
+        filtered_lines = filtered_lines[-lines:]
+
+    return {"logs": filtered_lines}

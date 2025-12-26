@@ -61,8 +61,8 @@ def upload_heatmap_to_snap4city(token, heat_map_model_name, broker, subnature, d
     long_min, long_max = coordinates['long'].min(), coordinates['long'].max()
     lat_min, lat_max = coordinates['lat'].min(), coordinates['lat'].max()
     wkt = (
-        f"POLYGON(({long_min} {lat_min}, {long_max} {lat_min}, "
-        f"{long_max} {lat_max}, {long_min} {lat_max}, {long_min} {lat_min}))"
+        f"POLYGON(({long_min}-{lat_min},{long_max}-{lat_min},"
+        f"{long_max}-{lat_max},{long_min}-{lat_max},{long_min}-{lat_min}))"
     )
     wkt_geo_json = {
         "type": "Polygon",
@@ -121,25 +121,32 @@ def upload_heatmap_to_snap4city(token, heat_map_model_name, broker, subnature, d
     r = create_heatmap_device(config)
     info_heatmap = {}
 
-    if r['status'] == 'ko' and r.get('error_msg'):
+    if r.get("status") != "ok":
         info_heatmap['device'] = {
-            'POSTStatus': "Error in creating device",
-            'error': r['error_msg']
+            "POSTStatus": "Error in creating device",
+            "http_status": r.get("http_status"),
+            "error": r.get("error_msg", r),
         }
     else:
         info_heatmap['device'] = {
-            'POSTStatus': f"Stato creazione device {config['device_name']} : {r['status']}"
+            "POSTStatus": f"Device {config['device_name']} created successfully"
         }
 
     logger.info("Insert data in Device")
     time.sleep(5)
 
     response = send_heatmap_device_data(config)
-    if response.status_code == 204:
-        info_heatmap['device_data'] = {"POSTStatus": "Inserimento riuscito"}
+    logger.debug("Send device data HTTP status: %s", response.status_code)
+    logger.debug("Send device data response text: %s", response.text)
+
+    if response.status_code in (200, 204):
+        info_heatmap['device_data'] = {
+            "POSTStatus": "Inserimento riuscito"
+        }
     else:
         info_heatmap['device_data'] = {
             "POSTStatus": "Inserimento fallito",
+            "http_status": response.status_code,
             "error": response.text
         }
 
@@ -193,18 +200,29 @@ def create_heatmap_device(conf: dict):
         "Authorization": f"Bearer {token}",
     }
 
-    url = device_url + f"action=insert&attributes={attributes}&id={device_name}&type={type}&kind={kind}&contextbroker={context_broker}&format={format}&mac=&model={model}&producer={producer}&latitude={lat}&longitude={long}&visibility=&frequency={frequency}&accessToken={token}&k1={k1}&k2={k2}&edgegateway_type=&edgegateway_uri=&subnature={subnature}&static_attributes=&servicePath=&nodered=false&hlt={hlt}&wktGeometry={wkt}&nodered=false"
+    url = device_url + f"action=insert&attributes={attributes}&id={device_name}&type={type}&kind={kind}&contextbroker={context_broker}&format={format}&mac=&model={model}&producer={producer}&latitude={lat}&longitude={long}&visibility=&frequency={frequency}&accessToken={token}&k1={k1}&k2={k2}&edgegateway_type=&edgegateway_uri=&subnature={subnature}&static_attributes=&servicePath=&nodered=false&hlt={hlt}&wktGeometry={wkt}"
 
-    response = requests.request("PATCH", url, headers=header)
+    print(url)
 
-    write_log({
-        "url": url,
-        "header": header,
-        "response_status": response.status_code
-    })
+    response = requests.patch(url, headers=header)
 
-    r = response.text
-    r = json.loads(r)
+    logger.debug("Create device HTTP status: %s", response.status_code)
+    logger.debug("Create device response text: %s", response.text)
+
+    try:
+        r = response.json()
+    except ValueError:
+        r = {
+            "status": "ko",
+            "error_msg": "Invalid JSON response",
+            "raw_response": response.text
+        }
+
+    # errore HTTP esplicito
+    if response.status_code >= 400:
+        r["http_status"] = response.status_code
+        r.setdefault("status", "ko")
+
     time.sleep(2)
 
     return r
