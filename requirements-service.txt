@@ -1,12 +1,12 @@
 # Core scientific
 numpy>=1.27
-pandas>=2.1
+pandas>=2.2
 
 # Geo/spatial
-geopandas>=0.15
+geopandas>=1.1
 shapely>=2.1
-pyproj>=3.6
-geopy>=2.6
+pyproj>=3.7
+geopy>=2.4.1
 
 # ML / plotting
 matplotlib>=3.8
@@ -22,3 +22,8 @@ prophet>=1.2.1
 
 # MLOps / logging
 clearml>=2.3
+
+# Web framework
+fastapi>=0.111
+uvicorn[standard]>=0.26
+pydantic>=2.7
