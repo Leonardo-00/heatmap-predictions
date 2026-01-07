@@ -1,5 +1,5 @@
 ''' Snap4city Computing HEATMAP - Data Interpolation Module.
-    Copyright (C) 2024 DISIT Lab http://www.disit.org - University of Florence
+    Copyright (C) 2026 DISIT Lab http://www.disit.org - University of Florence
 '''
 
 import math
@@ -12,238 +12,285 @@ from scipy.ndimage import gaussian_filter
 from scipy.interpolate import Akima1DInterpolator
 from shapely import contains_xy
 
+# Standard logging configuration
 logger = logging.getLogger(__name__)
 
 class Interpolator(ABC):
     """
-    Abstract Base Class for spatial interpolation.
+    Abstract Base Class for spatial interpolation strategies.
     
-    Handles grid generation and provides a centralized logic to ensure the 
-    total number of grid cells stays within defined memory and platform limits.
+    This class provides a framework for generating a coordinate grid from 
+    geographic boundaries and performing post-interpolation refinement. 
+    It ensures that computational complexity stays within defined limits.
     """
     def __init__(self, xy_known, val_known, max_cells=10000, base_cell_size=10.0, bbox=None):
         """
-        Initializes the Interpolator.
+        Initializes the Interpolator with sensor data and spatial constraints.
 
         Args:
-            xy_known (np.ndarray): Array of known sensor coordinates (UTM).
-            val_known (np.ndarray): Array of sensor values.
-            max_cells (int): Maximum allowed number of cells in the resulting grid.
-            base_cell_size (float): Initial target size for each cell (meters).
-            bbox (shapely.geometry.Polygon): Bounding Box of the area of interest.
+            xy_known (np.ndarray): Nx2 array of sensor coordinates in UTM (meters).
+            val_known (np.ndarray): N-length array of observed sensor values.
+            max_cells (int): Maximum number of active cells allowed for computation.
+            base_cell_size (float): Initial target resolution (step size) in meters.
+            bbox (shapely.geometry.Polygon): Polygon defining the total output area.
         """
         self.xy_known = xy_known
         self.val_known = val_known
         self.max_cells = max_cells
         self.cell_size = base_cell_size
         self.bbox = bbox
-        self.step_increment = 12.5  
+        self.sigma = 1.5  # Standard deviation for Gaussian smoothing
 
     @staticmethod
     def build(method, xy_known, val_known, max_cells, bbox):
         """
-        Factory method to instantiate the correct Interpolator subclass.
+        Factory method to instantiate the appropriate Interpolator subclass.
+
+        Args:
+            method (str): The interpolation algorithm to use ('idw' or 'akima').
+            xy_known (np.ndarray): Known point coordinates.
+            val_known (np.ndarray): Values at known points.
+            max_cells (int): Cell limit for the active calculation area.
+            bbox (shapely.geometry.Polygon): Bounding Box for the output.
+
+        Returns:
+            Interpolator: An instance of the requested Interpolator subclass.
+        
+        Raises:
+            ValueError: If an unsupported interpolation method is specified.
         """
+        logger.info(f"Building interpolator instance for method: {method}")
         if method == 'idw':
             return IDWInterpolator(xy_known, val_known, max_cells, bbox=bbox)
         elif method == 'akima':
             return AkimaInterpolator(xy_known, val_known, max_cells, bbox=bbox)
         else:
-            raise ValueError(f"Unknown interpolation method: {method}")
+            logger.error(f"Method {method} is not supported")
+            raise ValueError(f"Unknown method: {method}")
+
+    def compute_step_from_area(self, area_meters, target_limit=None):
+        """
+        Calculates the theoretical step size required to fit an area into a cell limit.
+
+        Args:
+            area_meters (float): The surface area to cover in square meters.
+            target_limit (int, optional): The maximum number of cells. Defaults to self.max_cells.
+
+        Returns:
+            float: The calculated ideal step size in meters.
+        """
+        limit = target_limit if target_limit else self.max_cells
+        ideal_step = math.sqrt(area_meters / limit)
+        final_step = max(self.cell_size, ideal_step)
+        
+        logger.info(f"Step optimization: Area={area_meters:.2f}m2, Limit={limit} -> Ideal Step={final_step:.2f}m")
+        return math.ceil(final_step)
 
     def run(self):
         """
-        Executes the interpolation workflow: grid generation followed by value calculation.
-        """
-        grid_x, grid_y = self.build_grid()
-        grid_z = self.interpolate(grid_x, grid_y)
-        return grid_x, grid_y, grid_z, self.cell_size
+        Executes the full interpolation workflow.
 
-    def refine_step_to_limit(self, start_step):
+        Returns:
+            tuple: A 4-element tuple containing:
+                - grid_x (np.ndarray): 2D array of X coordinates.
+                - grid_y (np.ndarray): 2D array of Y coordinates.
+                - grid_z (np.ndarray): 2D array of smoothed interpolated values.
+                - cell_size (float): The final step size used for the grid.
         """
-        Incrementally increases the step size until the total number of cells 
-        is within the max_cells limit for the given BBox.
-        """
-        xmin, ymin, xmax, ymax = self.bbox.bounds
-        dx, dy = xmax - xmin, ymax - ymin
+        logger.info("Starting interpolation workflow")
         
-        step = max(1.0, start_step)
-        nx, ny = int(math.ceil(dx / step)), int(math.ceil(dy / step))
-        total = nx * ny
+        grid_x, grid_y = self.build_grid()
+        logger.info(f"Step 1: Grid generated. Shape: {grid_x.shape}, Step: {self.cell_size}m")
+        
+        grid_z_raw = self.interpolate(grid_x, grid_y)
+        logger.info("Step 2: Core interpolation completed")
+        
+        grid_z_final = self.post_process(grid_x, grid_y, grid_z_raw)
+        logger.info("Step 3: Post-processing (Gaussian smoothing) completed")
+        
+        return grid_x, grid_y, grid_z_final, self.cell_size
 
-        while total > self.max_cells:
-            step *= 1 + self.step_increment / 100
-            nx, ny = int(math.ceil(dx / step)), int(math.ceil(dy / step))
-            total = nx * ny
-            
-        return math.ceil(step)
+    def post_process(self, grid_x, grid_y, grid_z):
+        """
+        Applies a Gaussian filter to the interpolated grid to smooth transitions.
+
+        Args:
+            grid_x (np.ndarray): Grid X coordinates.
+            grid_y (np.ndarray): Grid Y coordinates.
+            grid_z (np.ndarray): Raw interpolated Z values (may contain NaNs).
+
+        Returns:
+            np.ndarray: Smoothed Z values with the original NaN mask restored.
+        """
+        logger.info(f"Post-processing: Applying Gaussian filter (sigma={self.sigma})")
+        nan_mask = np.isnan(grid_z)
+        if not np.any(~nan_mask):
+            logger.warning("Post-processing: Input grid is empty (all NaNs)")
+            return grid_z
+
+        # Fill NaNs with the mean value to prevent edge bleeding during blur
+        grid_z_filled = np.where(nan_mask, np.nanmean(grid_z), grid_z)
+        smoothed_z = gaussian_filter(grid_z_filled, sigma=self.sigma)
+        
+        # Restore original NaNs for areas outside the interpolation mask
+        smoothed_z[nan_mask] = np.nan
+        return smoothed_z
 
     @abstractmethod
     def build_grid(self):
-        """Generates the coordinate meshgrid."""
+        """Generates the meshgrid based on the Bounding Box and optimized step."""
         pass
 
     @abstractmethod
     def interpolate(self, grid_x, grid_y):
-        """Calculates interpolated values for the meshgrid."""
+        """Performs the specific mathematical interpolation logic."""
         pass
 
 class IDWInterpolator(Interpolator):
     """
-    Inverse Distance Weighting (IDW) Interpolator with Steep Distance-Based Decay.
+    Inverse Distance Weighting (IDW) Interpolator.
     
-    Values are calculated as a weighted average of known points. An aggressive 
-    exponential fading factor is applied to cells beyond a certain distance from 
-    sensors to eliminate artifacts in unmonitored areas.
+    Generates a continuous surface across the entire Bounding Box, with 
+    values fading to zero as distance from the nearest sensor increases.
     """
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.power = 4
-        self.max_dist = 50.0   # Zone of full influence (meters)
-        self.steepness = 5.0  # Fading rate (lower = more aggressive cut)
-
     def build_grid(self):
-        """Generates a grid ensuring total cells <= max_cells."""
-        self.cell_size = self.refine_step_to_limit(self.cell_size)
+        """
+        Calculates a uniform grid over the Bounding Box.
+        
+        Returns:
+            tuple: (grid_x, grid_y) as generated by np.meshgrid.
+        """
+        logger.info("IDW: Calculating step for BBox area")
         xmin, ymin, xmax, ymax = self.bbox.bounds
+        bbox_area = (xmax - xmin) * (ymax - ymin)
+        self.cell_size = self.compute_step_from_area(bbox_area)
+        
         x_edges = np.arange(xmin, xmax + self.cell_size, self.cell_size)
         y_edges = np.arange(ymin, ymax + self.cell_size, self.cell_size)
         return np.meshgrid(x_edges, y_edges)
 
     def interpolate(self, grid_x, grid_y):
         """
-        Performs IDW interpolation with an aggressive exponential decay.
+        Calculates IDW values with a p=4 power and 800m decay threshold.
+
+        Args:
+            grid_x (np.ndarray): Meshgrid X.
+            grid_y (np.ndarray): Meshgrid Y.
+
+        Returns:
+            np.ndarray: 2D array of interpolated values.
         """
+        logger.info(f"IDW: Processing matrix of shape {grid_x.shape}")
         gx, gy = grid_x.flatten(), grid_y.flatten()
-        points = np.vstack((gx, gy)).T
+        pts = np.vstack((gx, gy)).T
         
-        # Calculate distances to all sensors
-        dist = np.sqrt(((points[:, None, :] - self.xy_known[None, :, :]) ** 2).sum(axis=2))
-        
-        # Determine distance to the nearest sensor for each cell
+        # Broadcasting distance calculation
+        dist = np.sqrt(((pts[:, None, :] - self.xy_known[None, :, :]) ** 2).sum(axis=2))
         min_dist = np.min(dist, axis=1)
         
-        dist[dist == 0] = 1e-10
-        weights = 1 / dist**self.power
-        weights /= weights.sum(axis=1)[:, None]
+        dist[dist == 0] = 1e-10  # Prevent division by zero
+        w = 1 / dist**4
+        z = np.sum(w * self.val_known[None, :], axis=1) / w.sum(axis=1)
         
-        # Base IDW calculation
-        z = np.sum(weights * self.val_known[None, :], axis=1)
-        
-        # Aggressive decay: 1.0 within max_dist, then exponential drop-off
-        fade_factor = np.where(
-            min_dist <= self.max_dist, 
-            1.0, 
-            np.exp(-(min_dist - self.max_dist) / self.steepness)
-        )
-        
-        z *= fade_factor
-        return z.reshape(grid_x.shape)
+        # Exponential fade-out beyond 800 meters
+        fade = np.where(min_dist <= 800, 1.0, np.exp(-(min_dist - 800) / (5 * self.cell_size)))
+        return (z * fade).reshape(grid_x.shape)
 
 class AkimaInterpolator(Interpolator):
     """
-    Advanced Akima 2D Interpolator using row-column passes.
+    2D Akima Spline Interpolator.
+    
+    Uses a dual-pass (row-wise and column-wise) 1D Akima spline approach. 
+    Resolution is prioritized within the convex hull of sensors.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.hull_expand_cells = 3  
-        points = MultiPoint(self.xy_known)
-        self.hull_orig = points.convex_hull
-        self.eps = 1e-12
+        # Pre-calculate the convex hull of the sensor network
+        self.hull_orig = MultiPoint(self.xy_known).convex_hull
 
     def build_grid(self):
-        """Generates a high-resolution grid scaled to the sensor area."""
+        """
+        Optimizes resolution specifically for the area inside the convex hull.
+        Increments cell size iteratively if the active cell count exceeds max_cells.
+
+        Returns:
+            tuple: (grid_x, grid_y) meshgrid.
+        """
+        logger.info("Akima: Starting iterative resolution optimization")
         xmin, ymin, xmax, ymax = self.bbox.bounds
-        area_bbox = (xmax - xmin) * (ymax - ymin)
-        area_hull = self.hull_orig.area
-        ratio = area_hull / area_bbox
         
-        desired_step = self.cell_size
-        if 0 < ratio < 1.0:
-            desired_step *= math.sqrt(ratio)
+        # Initial step calculation based on hull area
+        self.cell_size = self.compute_step_from_area(self.hull_orig.area)
+        
+        while True:
+            # Generate temporary grid to count active cells
+            x_edges = np.arange(xmin, xmax + self.cell_size, self.cell_size)
+            y_edges = np.arange(ymin, ymax + self.cell_size, self.cell_size)
+            gx, gy = np.meshgrid(x_edges, y_edges)
             
-        self.cell_size = self.refine_step_to_limit(desired_step)
+            # Use a buffer to include sensors near the hull edge
+            hull_buffer = self.hull_orig.buffer(self.cell_size * 3)
+            active_cells = np.sum(contains_xy(hull_buffer, gx, gy))
+            
+            if active_cells <= self.max_cells:
+                logger.info(f"Akima: Limit respected. Final Step={self.cell_size}m, Active Cells={active_cells}")
+                break
+            
+            # Incrementally increase step to reduce cell count
+            self.cell_size += 1
+            logger.info(f"Akima: Limit exceeded ({active_cells} > {self.max_cells}). Retrying with step {self.cell_size}m")
         
-        logger.debug(f"Akima Grid - Ratio: {ratio:.4f}, Final Step: {self.cell_size}")
-        
-        x_edges = np.arange(xmin, xmax + self.cell_size, self.cell_size)
-        y_edges = np.arange(ymin, ymax + self.cell_size, self.cell_size)
         return np.meshgrid(x_edges, y_edges)
 
     def interpolate(self, grid_x, grid_y):
-        """Performs 2D Akima interpolation via dual-pass logic."""
-        hull_expanded = self.hull_orig.buffer(self.cell_size * self.hull_expand_cells)
-        mask_ext = contains_xy(hull_expanded, grid_x, grid_y)
+        """
+        Performs 2D interpolation using row-column passes of Akima splines.
+
+        Args:
+            grid_x (np.ndarray): Meshgrid X.
+            grid_y (np.ndarray): Meshgrid Y.
+
+        Returns:
+            np.ndarray: 2D array of interpolated values within the hull.
+        """
+        logger.info("Akima: Performing dual-pass spline calculation")
+        hull_buffer = self.hull_orig.buffer(self.cell_size * 3)
+        mask = contains_xy(hull_buffer, grid_x, grid_y)
         
         tree = cKDTree(self.xy_known)
-        grid_z_rows = np.full(grid_x.shape, np.nan)
-        grid_z_cols = np.full(grid_x.shape, np.nan)
+        z_rows, z_cols = np.full(grid_x.shape, np.nan), np.full(grid_x.shape, np.nan)
+        rows, cols = np.where(mask)
         
-        power = 3.5
-        rows, cols = np.where(mask_ext)
-        if rows.size == 0: 
-            return np.full(grid_x.shape, np.nan)
+        if rows.size == 0:
+            logger.warning("Akima: No active cells within hull mask")
+            return z_rows
 
-        # --- ROW-WISE PASS ---
+        # Row-wise interpolation pass
         for r in range(rows.min(), rows.max() + 1):
-            idx_in_hull = np.where(mask_ext[r, :])[0]
-            if len(idx_in_hull) < 2: continue
+            idx = np.where(mask[r, :])[0]
+            if len(idx) < 2: continue
+            x_c = np.linspace(grid_x[r, idx[0]], grid_x[r, idx[-1]], 5)
+            d, i = tree.query(np.column_stack((x_c, np.full(5, grid_y[r, 0]))), k=min(6, len(self.xy_known)))
+            w = 1.0 / ((d + 1e-12)**3.5)
+            z_c = np.sum(w * self.val_known[i], axis=1) / np.sum(w, axis=1)
+            try: z_rows[r, idx] = Akima1DInterpolator(x_c, z_c)(grid_x[r, idx])
+            except Exception: z_rows[r, idx] = np.interp(grid_x[r, idx], x_c, z_c)
 
-            x_start, x_end = grid_x[r, idx_in_hull[0]], grid_x[r, idx_in_hull[-1]]
-            x_control = np.linspace(x_start, x_end, 5)
-            y_const = grid_y[r, 0]
-            
-            pts_c = np.column_stack((x_control, np.full(5, y_const)))
-            dists, idxs = tree.query(pts_c, k=min(6, len(self.xy_known)))
-            
-            z_control = []
-            for j in range(5):
-                d = dists[j] + self.eps
-                w = 1.0 / (d**power)
-                z_control.append(np.sum(w * self.val_known[idxs[j]]) / np.sum(w))
-            
-            try:
-                ak = Akima1DInterpolator(x_control, z_control)
-                grid_z_rows[r, idx_in_hull] = ak(grid_x[r, idx_in_hull])
-            except:
-                grid_z_rows[r, idx_in_hull] = np.interp(grid_x[r, idx_in_hull], x_control, z_control)
-
-        # --- COLUMN-WISE PASS ---
+        # Column-wise interpolation pass
         for c in range(cols.min(), cols.max() + 1):
-            idx_in_hull = np.where(mask_ext[:, c])[0]
-            if len(idx_in_hull) < 2: continue
+            idx = np.where(mask[:, c])[0]
+            if len(idx) < 2: continue
+            y_c = np.linspace(grid_y[idx[0], c], grid_y[idx[-1], c], 5)
+            d, i = tree.query(np.column_stack((np.full(5, grid_x[0, c]), y_c)), k=min(6, len(self.xy_known)))
+            w = 1.0 / ((d + 1e-12)**3.5)
+            z_c = np.sum(w * self.val_known[i], axis=1) / np.sum(w, axis=1)
+            try: z_cols[idx, c] = Akima1DInterpolator(y_c, z_c)(grid_y[idx, c])
+            except Exception: z_cols[idx, c] = np.interp(grid_y[idx, c], y_c, z_c)
 
-            y_start, y_end = grid_y[idx_in_hull[0], c], grid_y[idx_in_hull[-1], c]
-            y_control = np.linspace(y_start, y_end, 5)
-            x_const = grid_x[0, c]
-            
-            pts_c = np.column_stack((np.full(5, x_const), y_control))
-            dists, idxs = tree.query(pts_c, k=min(6, len(self.xy_known)))
-            
-            z_control = []
-            for j in range(5):
-                d = dists[j] + self.eps
-                w = 1.0 / (d**power)
-                z_control.append(np.sum(w * self.val_known[idxs[j]]) / np.sum(w))
-            
-            try:
-                ak = Akima1DInterpolator(y_control, z_control)
-                grid_z_cols[idx_in_hull, c] = ak(grid_y[idx_in_hull, c])
-            except:
-                grid_z_cols[idx_in_hull, c] = np.interp(grid_y[idx_in_hull, c], y_control, z_control)
-
-        with np.errstate(all='ignore'):
-            grid_z = np.nanmean([grid_z_rows, grid_z_cols], axis=0)
-
-        for i in range(len(self.val_known)):
-            ix = np.abs(grid_x[0, :] - self.xy_known[i, 0]).argmin()
-            iy = np.abs(grid_y[:, 0] - self.xy_known[i, 1]).argmin()
-            grid_z[max(0,iy-1):iy+2, max(0,ix-1):ix+2] = self.val_known[i]
-
-        grid_z[~mask_ext] = np.nan
-        nan_mask = np.isnan(grid_z)
-        grid_z_filled = np.where(nan_mask, np.nanmean(grid_z), grid_z)
-        smoothed_z = gaussian_filter(grid_z_filled, sigma=1.2)
-        smoothed_z[nan_mask] = np.nan
+        # Combine passes using nanmean to handle potential edge artifacts
+        with np.errstate(all='ignore'): 
+            grid_z = np.nanmean([z_rows, z_cols], axis=0)
         
-        return smoothed_z
+        grid_z[~mask] = np.nan
+        logger.info("Akima: Core interpolation pass finished")
+        return grid_z
