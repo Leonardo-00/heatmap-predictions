@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import logging
 from ..helper import safe_float_conversion
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def preprocess_sensors_data(sensors_data, value_types, sensor_category, info_hea
     data = compute_average_values(sensors_data, names_matrix)
     
     # 4. Handle domain-specific sanitization (e.g., no negative values for air quality)
-    #data = sanitize_values(data, sensor_category)
+    data = sanitize_values(data, sensor_category)
 
     # 5. Aggregate sensors that share exact spatial coordinates
     data = aggregate_sensors(data, sensor_category)
@@ -126,13 +127,8 @@ def sanitize_values(data, sensor_category):
     Example: Air quality or Traffic counts cannot be negative.
     """
     data = data.copy()
-    physical_positive_cats = {
-        "Air_quality_monitoring_station",
-        "Traffic_sensor",
-        "Weather_sensor"
-    }
-
-    if sensor_category in physical_positive_cats:
+    
+    if sensor_category in config.PHYSICAL_POSITIVE_CATS:
         data.loc[data["value"] < 0, "value"] = np.nan
 
     return data
@@ -143,13 +139,10 @@ def aggregate_sensors(data, sensor_category):
     Aggregates data points that share the exact same Latitude and Longitude.
     Different strategies are applied depending on the category.
     """
-    mean_categories = {"Air_quality_monitoring_station", "Weather_sensor"}
-    p85_categories = {"Noise_monitoring_station"}
-
-    if sensor_category in mean_categories:
+    if sensor_category in config.AGG_MEAN_CATS:
         agg_func = "mean"
-    elif sensor_category in p85_categories:
-        agg_func = lambda x: np.percentile(x, 85)
+    elif sensor_category in config.AGG_PERCENTILE_CATS:
+        agg_func = lambda x: np.percentile(x, config.AGG_PERCENTILE_VALUE)
     else:
         # Default for Traffic and others: take the maximum observed impact
         agg_func = "max"
@@ -176,7 +169,7 @@ def clean_data_values(data, info_heatmap, value_types):
         logger.warning(msg)
     else:
         # Replace common sensor error/sentinel codes with NaN
-        data['value'] = data['value'].replace([-9999, 9999, -999, 999], np.nan)
+        data['value'] = data['value'].replace(config.SENTINEL_VALUES, np.nan)
         data = data.dropna(subset=["value"])
         
     return data.infer_objects(copy=False)

@@ -19,6 +19,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from pyproj import Transformer
+import config
 
 # --- Internal Module Imports ---
 from .data_upload import upload_heatmap_to_snap4city, save_interpolated_data, create_interpolated_heatmap
@@ -94,7 +95,14 @@ def generate_heatmap(params: dict):
     long_max = params.get("long_max")
     lat_min = params.get("lat_min")
     lat_max = params.get("lat_max")
-    epsg_projection = params.get("epsg_projection")
+    
+    # Use config defaults for optional parameters
+    epsg_projection = params.get("epsg_projection", config.DEFAULT_EPSG)
+    clustered = params.get("clustered", config.DEFAULT_CLUSTERED)
+    file_flag = params.get("file", config.DEFAULT_FILE_FLAG)
+    broker = params.get("broker", config.DEFAULT_BROKER)
+    max_cells = params.get("max_cells", config.MAX_CELLS)
+
     value_types = params.get("value_types")
     subnature = params.get("subnature")
     scenario = params.get("scenario")
@@ -103,11 +111,7 @@ def generate_heatmap(params: dict):
     to_date_time = params.get("to_date_time")
     token = params.get("token")
     heat_map_model_name = params.get("heat_map_model_name")
-    model_method = params.get("model")
-    clustered = params.get("clustered", 0)
-    file_flag = params.get("file", 1)
-    broker = params.get("broker", None)
-    max_cells = params.get("max_cells", 10000)
+    model_method = params.get("model", config.DEFAULT_MODEL)
 
     # --- Initial Logging & Validation ---
     logger.debug("--------- CHECK ON PARAMETERS START ---------")
@@ -178,11 +182,11 @@ def generate_heatmap(params: dict):
     logger.debug("--------- DATA INTERPOLATION - START ---------")
     logger.debug(datetime.now())
     
-    if len(data) >= 3:
+    if len(data) >= config.MIN_SENSORS_REQUIRED:
         data = data.dropna().drop_duplicates().reset_index(drop=True)
         
         # Proiezione punti sensori
-        transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg_projection}", always_xy=True)
+        transformer = Transformer.from_crs(config.CRS_LATLON, f"EPSG:{epsg_projection}", always_xy=True)
         data['X'], data['Y'] = transformer.transform(data['long'].values, data['lat'].values)
 
         xy_known = data[['X', 'Y']].values
@@ -202,7 +206,7 @@ def generate_heatmap(params: dict):
         })
         logger.info(f"interpolatedData dim: {len(interpolated_df)}")
     else:
-        msg = "Not enough data points for interpolation. At least 3 valid data points are required."
+        msg = f"Not enough data points for interpolation. At least {config.MIN_SENSORS_REQUIRED} valid data points are required."
         logger.error(msg)
         status.add_message(msg)
         return status.to_dict()
@@ -238,12 +242,9 @@ def generate_heatmap(params: dict):
     # Log di campionamento (Sample)
     logger.debug("--------- INTERPOLATED HEATMAP SAMPLE ---------")
     if len(interpolated_heatmap['attributes']) > 0:
-        # Generiamo il JSON formattato
         sample_json = json.dumps(interpolated_heatmap['attributes'][:5], indent=2)
-        
-        # Logghiamo ogni riga singolarmente
         for line in sample_json.splitlines():
-            logger.debug(f"  {line}") # Aggiungiamo due spazi di shift per leggibilità
+            logger.debug(f"  {line}") 
     logger.debug("------------------------------------------------")
 
     logger.debug("--------- SAVING INTERPOLATED DATA LIST - START ---------")

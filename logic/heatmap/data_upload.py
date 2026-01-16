@@ -9,6 +9,7 @@ import logging
 import requests
 from urllib.parse import quote
 from ..helper import write_log
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def create_interpolated_heatmap(interpolated_data, heatmap_name, metric_name, fr
             'yLength': step_size,
             'projection': int(epsg_projection),
             'file': file_flag,
-            'org': 'DISIT'
+            'org': config.DEVICE_PRODUCER
         }
         heatmap_attributes.append(record)
 
@@ -62,9 +63,9 @@ def upload_heatmap_to_snap4city(token, heat_map_model_name, broker, subnature, d
     """
     Coordinates the creation of an IoT device and the subsequent upload of its metadata to Snap4City.
     """
-    base_url = os.getenv("BASE_URL", "https://www.snap4city.org")
-    orion_url = os.getenv("ORIONFILTER_BASE_URL", "https://www.snap4city.org/orionfilter")
-    broker = broker or os.getenv("DEFAULT_BROKER", "orionUNIFI")
+    base_url = os.getenv("BASE_URL", config.SNAP4CITY_BASE_URL)
+    orion_url = os.getenv("ORIONFILTER_BASE_URL", config.ORION_BASE_URL)
+    broker = broker or os.getenv("DEFAULT_BROKER", config.DEFAULT_BROKER)
 
     # Construct the bounding box geometry
     lons, lats = coordinates['long'], coordinates['lat']
@@ -75,24 +76,24 @@ def upload_heatmap_to_snap4city(token, heat_map_model_name, broker, subnature, d
         "coordinates": [[[lons.min(), lats.min()], [lons.max(), lats.min()], [lons.max(), lats.max()], [lons.min(), lats.max()], [lons.min(), lats.min()]]]
     }
 
-    config = {
+    device_conf = {
         "token": token,
         "device_name": device_name,
         "heatmap_name": heatmap_name,
         "model": {
             "model_name": heat_map_model_name,
-            "model_type": "Heatmap",
-            "model_kind": "sensor",
-            "model_frequency": "600",
+            "model_type": config.DEVICE_MODEL_TYPE,
+            "model_kind": config.DEVICE_MODEL_KIND,
+            "model_frequency": config.DEVICE_MODEL_FREQ,
             "model_contextbroker": broker,
-            "model_format": "json",
+            "model_format": config.DEVICE_MODEL_FORMAT,
             "model_subnature": subnature,
             "device_url": f"{base_url}/iot-directory/api/device.php?"
         },
-        "producer": "DISIT",
-        "k1": "cdfc46e7-75fd-46c5-b11e-04e231b08f37",
-        "k2": "24f146b3-f2e8-43b8-b29f-0f9f1dd6cac5",
-        "hlt": "Heatmap",
+        "producer": config.DEVICE_PRODUCER,
+        "k1": config.IOT_K1,
+        "k2": config.IOT_K2,
+        "hlt": config.DEVICE_MODEL_TYPE,
         "lat": lats.values[0],
         "long": lons.values[0],
         "patch_url": f"{orion_url}/{broker}/v2/entities/",
@@ -106,15 +107,12 @@ def upload_heatmap_to_snap4city(token, heat_map_model_name, broker, subnature, d
         "minimum_date": from_date_time
     }
     
-    # --- NUOVO BLOCCO LOG STRUTTURATO ---
     logger.debug("--------- HEATMAP DEVICE CONFIGURATION ---------")
-    config_json = json.dumps(config, indent=2)
-    for line in config_json.splitlines():
-        logger.debug(f"  {line}")
+    logger.debug(json.dumps(device_conf, indent=2))
     logger.debug("------------------------------------------------")
 
     # Execute Device Creation
-    creation_res = create_heatmap_device(config)
+    creation_res = create_heatmap_device(device_conf)
     results = {"device": {"POSTStatus": "Success" if creation_res.get("status") == "ok" else "Error"}}
     
     if creation_res.get("status") != "ok":
@@ -125,7 +123,7 @@ def upload_heatmap_to_snap4city(token, heat_map_model_name, broker, subnature, d
     time.sleep(5)
 
     # Upload actual Heatmap Attributes (metadata)
-    data_res = send_heatmap_device_data(config)
+    data_res = send_heatmap_device_data(device_conf)
     results["device_data"] = {
         "POSTStatus": "Success" if data_res.status_code in (200, 204) else "Failed",
         "http_status": data_res.status_code
@@ -177,25 +175,12 @@ def create_heatmap_device(conf):
         f"&hlt={conf['hlt']}&wktGeometry={conf['wkt']}"
     )
 
-    # Log the full URL for debugging (indented for readability)
-    logger.debug("--------- DEVICE CREATION URL ---------")
-    logger.debug(f"  {url}")
-    logger.debug("---------------------------------------")
+    logger.debug(f"Device creation URL: {url}")
 
     try:
-        response = requests.patch(url, headers=header)
+        response = requests.patch(url, headers=header, timeout=config.API_TIMEOUT)
         logger.debug(f"Create device HTTP status: {response.status_code}")
         
-        # Log response content formatted
-        try:
-            res_json = response.json()
-            res_formatted = json.dumps(res_json, indent=2)
-            for line in res_formatted.splitlines():
-                logger.debug(f"  {line}")
-        except:
-            logger.debug(f"  Raw Response: {response.text}")
-
-        # Basic error handling for the response
         if response.status_code >= 400:
             return {
                 "status": "ko", 
@@ -229,7 +214,7 @@ def send_heatmap_device_data(conf):
     url = f"{conf['patch_url']}{conf['device_name']}/attrs?elementid={conf['device_name']}&type={conf['model']['model_type']}"
     headers = {"Authorization": f"Bearer {conf['token']}", "Content-Type": "application/json"}
     
-    response = requests.patch(url, data=json.dumps(payload), headers=headers)
+    response = requests.patch(url, data=json.dumps(payload), headers=headers, timeout=config.API_TIMEOUT)
     write_log({"endpoint": "Orion-Patch", "status": response.status_code})
     return response
 
@@ -242,15 +227,16 @@ def save_interpolated_data(interpolated_heatmap, heatmap_name, metric_name, to_d
     Includes a 'Token Probe' check before attempting to send the full array.
     """
     info_heatmap = info_heatmap or {}
-    insert_url = os.getenv("HEATMAP_INSERT_BASE_URL", "http://192.168.0.59:8000") + "/insertArray"
-    setmap_url = os.getenv("HEATMAP_SETMAP_URL", "http://192.168.0.59/setMap.php")
+    insert_url = os.getenv("HEATMAP_INSERT_BASE_URL", config.HEATMAP_INSERT_URL)
+    setmap_url = os.getenv("HEATMAP_SETMAP_URL", config.HEATMAP_SETMAP_URL)
 
     # --- TOKEN PROBE ---
     # Check if the session is still valid before sending large data
     probe_headers = {"Authorization": f"Bearer {token}"}
     try:
         # Pinging a lightweight directory endpoint as a probe
-        probe_res = requests.get(f"{insert_url.replace('/insertArray', '')}/probe", headers=probe_headers)
+        base_probe = insert_url.rsplit('/', 1)[0]
+        probe_res = requests.get(f"{base_probe}/probe", headers=probe_headers, timeout=5)
         if probe_res.status_code == 401:
             logger.error("Token expired during interpolation. Aborting upload.")
             info_heatmap['interpolation'] = {"POSTstatus": "Failed", "error": "Unauthorized/Token Expired"}
@@ -260,7 +246,7 @@ def save_interpolated_data(interpolated_heatmap, heatmap_name, metric_name, to_d
 
     # --- MAIN UPLOAD ---
     try:
-        response = requests.post(insert_url, json=interpolated_heatmap['attributes'])
+        response = requests.post(insert_url, json=interpolated_heatmap['attributes'], timeout=120)
         save_status = response.status_code
     except requests.RequestException as e:
         logger.error(f"Bulk insert failed: {e}")
@@ -271,7 +257,7 @@ def save_interpolated_data(interpolated_heatmap, heatmap_name, metric_name, to_d
     # Notify the PHP controller to finalize the map registration
     final_query = f"{setmap_url}?mapName={heatmap_name}&metricName={metric_name}&date={to_date_time}Z&completed={completed}"
     try:
-        final_res = requests.get(final_query)
+        final_res = requests.get(final_query, timeout=config.API_TIMEOUT)
         if final_res.status_code == 200 and completed == 1:
             info_heatmap['interpolation'] = {"POSTstatus": "Success"}
         else:

@@ -7,6 +7,7 @@ import requests
 import pandas as pd
 import logging
 from ..helper import write_log, parse_from_date, round_time
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +57,9 @@ def fetch_sensor_data(service_uri, from_date_time, to_date_time, access_token):
     """
     # Handle relative date parsing (e.g., "1-day" -> calculated ISO date)
     parsed_start = parse_from_date(from_date_time, to_date_time)
-    start_time = parsed_start.strftime('%Y-%m-%dT%H:%M:%S') if parsed_start else from_date_time
+    start_time = parsed_start.strftime(config.DATE_FORMAT_API) if parsed_start else from_date_time
 
-    base_url = os.getenv("BASE_URL", "https://www.snap4city.org")
+    base_url = os.getenv("BASE_URL", config.SNAP4CITY_BASE_URL)
     api_url = (
         f"{base_url}/superservicemap/api/v1/?serviceUri={service_uri}"
         f"&fromTime={start_time}&toTime={to_date_time}&accessToken={access_token}"
@@ -67,7 +68,7 @@ def fetch_sensor_data(service_uri, from_date_time, to_date_time, access_token):
     headers = {"Authorization": f"Bearer {access_token}"}
 
     try:
-        res = requests.get(api_url, headers=headers, timeout=30)
+        res = requests.get(api_url, headers=headers, timeout=config.API_TIMEOUT)
         res.raise_for_status()
         raw_data = res.json()
 
@@ -142,15 +143,15 @@ def get_sensors_in_area(lat_min, long_min, lat_max, long_max, sensor_category, t
         RuntimeError: If the API call fails.
         ValueError: If no sensors are found in the area.
     """
-    base_url = os.getenv("BASE_URL", "https://www.snap4city.org")
+    base_url = os.getenv("BASE_URL", config.SNAP4CITY_BASE_URL)
     query_url = (
         f"{base_url}/superservicemap/api/v1/?selection="
         f"{lat_min};{long_min};{lat_max};{long_max}"
         f"&categories={sensor_category}"
-        f"&maxResults=100&maxDists=5&format=json"
+        f"&maxResults={config.DISCOVERY_MAX_RESULTS}&maxDists={config.DISCOVERY_MAX_DIST}&format=json"
     )
 
-    response = requests.get(query_url, timeout=30)
+    response = requests.get(query_url, timeout=config.API_TIMEOUT)
     write_log({"url": query_url, "status": response.status_code})
 
     if response.status_code != 200:

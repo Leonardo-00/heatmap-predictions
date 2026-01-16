@@ -11,6 +11,7 @@ from scipy.spatial import cKDTree
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import Akima1DInterpolator
 from shapely import contains_xy
+import config
 
 # Standard logging configuration
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ class Interpolator(ABC):
     geographic boundaries and performing post-interpolation refinement. 
     It ensures that computational complexity stays within defined limits.
     """
-    def __init__(self, xy_known, val_known, max_cells=10000, base_cell_size=10.0, bbox=None):
+    def __init__(self, xy_known, val_known, max_cells=None, base_cell_size=None, bbox=None):
         """
         Initializes the Interpolator with sensor data and spatial constraints.
 
@@ -36,10 +37,10 @@ class Interpolator(ABC):
         """
         self.xy_known = xy_known
         self.val_known = val_known
-        self.max_cells = max_cells
-        self.cell_size = base_cell_size
+        self.max_cells = max_cells if max_cells is not None else config.MAX_CELLS
+        self.cell_size = base_cell_size if base_cell_size is not None else config.BASE_CELL_SIZE
         self.bbox = bbox
-        self.sigma = 1.5  # Standard deviation for Gaussian smoothing
+        self.sigma = config.GAUSSIAN_SIGMA
 
     @staticmethod
     def build(method, xy_known, val_known, max_cells, bbox):
@@ -171,7 +172,7 @@ class IDWInterpolator(Interpolator):
 
     def interpolate(self, grid_x, grid_y):
         """
-        Calculates IDW values with a p=4 power and 800m decay threshold.
+        Calculates IDW values with configurable power and decay threshold.
 
         Args:
             grid_x (np.ndarray): Meshgrid X.
@@ -189,11 +190,15 @@ class IDWInterpolator(Interpolator):
         min_dist = np.min(dist, axis=1)
         
         dist[dist == 0] = 1e-10  # Prevent division by zero
-        w = 1 / dist**4
+        w = 1 / dist**config.IDW_POWER
         z = np.sum(w * self.val_known[None, :], axis=1) / w.sum(axis=1)
         
-        # Exponential fade-out beyond 800 meters
-        fade = np.where(min_dist <= 800, 1.0, np.exp(-(min_dist - 800) / (5 * self.cell_size)))
+        # Exponential fade-out beyond configured meters
+        fade = np.where(
+            min_dist <= config.IDW_FADE_DISTANCE, 
+            1.0, 
+            np.exp(-(min_dist - config.IDW_FADE_DISTANCE) / (config.IDW_FADE_SMOOTHING * self.cell_size))
+        )
         return (z * fade).reshape(grid_x.shape)
 
 class AkimaInterpolator(Interpolator):
@@ -229,7 +234,7 @@ class AkimaInterpolator(Interpolator):
             gx, gy = np.meshgrid(x_edges, y_edges)
             
             # Use a buffer to include sensors near the hull edge
-            hull_buffer = self.hull_orig.buffer(self.cell_size * 3)
+            hull_buffer = self.hull_orig.buffer(self.cell_size * config.AKIMA_HULL_BUFFER_FACTOR)
             active_cells = np.sum(contains_xy(hull_buffer, gx, gy))
             
             if active_cells <= self.max_cells:
@@ -254,7 +259,7 @@ class AkimaInterpolator(Interpolator):
             np.ndarray: 2D array of interpolated values within the hull.
         """
         logger.info("Akima: Performing dual-pass spline calculation")
-        hull_buffer = self.hull_orig.buffer(self.cell_size * 3)
+        hull_buffer = self.hull_orig.buffer(self.cell_size * config.AKIMA_HULL_BUFFER_FACTOR)
         mask = contains_xy(hull_buffer, grid_x, grid_y)
         
         tree = cKDTree(self.xy_known)
@@ -269,9 +274,9 @@ class AkimaInterpolator(Interpolator):
         for r in range(rows.min(), rows.max() + 1):
             idx = np.where(mask[r, :])[0]
             if len(idx) < 2: continue
-            x_c = np.linspace(grid_x[r, idx[0]], grid_x[r, idx[-1]], 5)
-            d, i = tree.query(np.column_stack((x_c, np.full(5, grid_y[r, 0]))), k=min(6, len(self.xy_known)))
-            w = 1.0 / ((d + 1e-12)**3.5)
+            x_c = np.linspace(grid_x[r, idx[0]], grid_x[r, idx[-1]], config.AKIMA_SPLINE_POINTS)
+            d, i = tree.query(np.column_stack((x_c, np.full(config.AKIMA_SPLINE_POINTS, grid_y[r, 0]))), k=min(config.AKIMA_K_NEIGHBORS, len(self.xy_known)))
+            w = 1.0 / ((d + 1e-12)**config.AKIMA_WEIGHT_POWER)
             z_c = np.sum(w * self.val_known[i], axis=1) / np.sum(w, axis=1)
             try: z_rows[r, idx] = Akima1DInterpolator(x_c, z_c)(grid_x[r, idx])
             except Exception: z_rows[r, idx] = np.interp(grid_x[r, idx], x_c, z_c)
@@ -280,9 +285,9 @@ class AkimaInterpolator(Interpolator):
         for c in range(cols.min(), cols.max() + 1):
             idx = np.where(mask[:, c])[0]
             if len(idx) < 2: continue
-            y_c = np.linspace(grid_y[idx[0], c], grid_y[idx[-1], c], 5)
-            d, i = tree.query(np.column_stack((np.full(5, grid_x[0, c]), y_c)), k=min(6, len(self.xy_known)))
-            w = 1.0 / ((d + 1e-12)**3.5)
+            y_c = np.linspace(grid_y[idx[0], c], grid_y[idx[-1], c], config.AKIMA_SPLINE_POINTS)
+            d, i = tree.query(np.column_stack((np.full(config.AKIMA_SPLINE_POINTS, grid_x[0, c]), y_c)), k=min(config.AKIMA_K_NEIGHBORS, len(self.xy_known)))
+            w = 1.0 / ((d + 1e-12)**config.AKIMA_WEIGHT_POWER)
             z_c = np.sum(w * self.val_known[i], axis=1) / np.sum(w, axis=1)
             try: z_cols[idx, c] = Akima1DInterpolator(y_c, z_c)(grid_y[idx, c])
             except Exception: z_cols[idx, c] = np.interp(grid_y[idx, c], y_c, z_c)
