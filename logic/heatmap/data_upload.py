@@ -9,7 +9,7 @@ import logging
 import requests
 from urllib.parse import quote
 from ..helper import write_log
-import config
+import logic.config as config
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import logging
 from ..helper import safe_float_conversion
-import config
+import logic.config as config
 
 logger = logging.getLogger(__name__)
 

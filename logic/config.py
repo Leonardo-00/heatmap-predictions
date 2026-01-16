@@ -1,107 +1,158 @@
-# config.py
+''' Snap4city Computing HEATMAP - Configuration Module.
+    Copyright (C) 2026 DISIT Lab http://www.disit.org - University of Florence
 
-# --- HEATMAP ---
-# Default spatial projection (EPSG code)
+    This module centralizes all configurable parameters for the heatmap generation pipeline.
+    It controls API endpoints, interpolation hyperparameters, data preprocessing rules,
+    and IoT device registration metadata.
+
+    Usage:
+        import logic.config as config
+        timeout = config.API_TIMEOUT
+'''
+
+# =============================================================================
+# 1. ORCHESTRATION & GENERAL SETTINGS
+# =============================================================================
+
+# Default Coordinate Reference System (EPSG code) for UTM projection.
+# 32632 = WGS 84 / UTM zone 32N (Central Italy/Europe).
 DEFAULT_EPSG = 32632
 
-# Default flags for the generation process
-DEFAULT_CLUSTERED = 0  # 0=No, 1=Yes
-DEFAULT_FILE_FLAG = 0  # 0=DB only, 1=File generation
-DEFAULT_BROKER = None  # Let backend decide or use specific broker
-
-# Minimum number of valid sensors required to attempt interpolation
-MIN_SENSORS_REQUIRED = 3
-
-# Coordinate Reference Systems
+# Standard Lat/Lon CRS used for input/output.
 CRS_LATLON = "EPSG:4326"
 
-# --- API & DATA RETRIEVAL ---
-# URL base per le chiamate API Snap4City
+# Flags controlling the generation workflow.
+DEFAULT_CLUSTERED = 0      # 0: Generate standard heatmap, 1: Generate clustered view.
+DEFAULT_FILE_FLAG = 0      # 0: Save to Database only, 1: Generate physical file on server.
+DEFAULT_BROKER = None      # None: Let backend decide, or specify 'orionUNIFI' etc.
+
+# Logic threshold: Minimum number of valid sensors required to attempt interpolation.
+# If fewer sensors are found, the process aborts to avoid statistical errors.
+MIN_SENSORS_REQUIRED = 3
+
+
+# =============================================================================
+# 2. API & DATA RETRIEVAL
+# =============================================================================
+
+# Base endpoint for Snap4City APIs.
 SNAP4CITY_BASE_URL = "https://www.snap4city.org"
 
-# Timeout in secondi per le richieste di rete (evita che il processo si appenda)
+# Network timeout (in seconds) for HTTP requests to avoid hanging processes.
 API_TIMEOUT = 30
 
-# Limiti per la discovery dei sensori nell'area
-DISCOVERY_MAX_RESULTS = 100
-DISCOVERY_MAX_DIST = 5  # Parametro di distanza usato dall'API
+# Constraints for the Sensor Discovery API (SuperServiceMap).
+DISCOVERY_MAX_RESULTS = 100  # Max number of sensors to retrieve per query.
+DISCOVERY_MAX_DIST = 5       # Max distance parameter (API specific).
 
-# Formato data richiesto dalle API
-DATE_FORMAT_API = '%Y-%m-%dT%H:%M:%S'
+# Date format used for API query strings.
+DATE_FORMAT = '%Y-%m-%dT%H:%M:%S'
 
-# --- PREPROCESSING SETTINGS ---
-# Categorie di sensori che non possono avere valori negativi (es. PM10, traffico)
+
+# =============================================================================
+# 3. DATA PREPROCESSING & CLEANING
+# =============================================================================
+
+# Sensor categories where negative values are physically impossible.
+# Any negative value found for these will be treated as NaN (Sensor Error).
 PHYSICAL_POSITIVE_CATS = {
     "Air_quality_monitoring_station",
     "Traffic_sensor",
     "Weather_sensor"
 }
 
-# Categorie da aggregare usando la media (Mean)
+# --- Aggregation Strategies ---
+# Defines how to handle multiple sensors located at the exact same coordinate.
+
+# Strategy: Arithmetic Mean
 AGG_MEAN_CATS = {
     "Air_quality_monitoring_station", 
     "Weather_sensor"
 }
 
-# Categorie da aggregare usando il percentile (es. rumore)
+# Strategy: Percentile (e.g., for Noise monitoring where peaks matter more)
 AGG_PERCENTILE_CATS = {
     "Noise_monitoring_station"
 }
 
-# Valore del percentile da usare (es. 85 per Lden/Noise)
+# The percentile value to use if AGG_PERCENTILE_CATS strategy is active.
 AGG_PERCENTILE_VALUE = 85
 
-# Valori sentinella che indicano errore del sensore da convertire in NaN
+# Sentinel values indicating sensor hardware errors (to be converted to NaN).
 SENTINEL_VALUES = [-9999, 9999, -999, 999]
 
-# --- INTERPOLATION GENERAL ---
-# Numero massimo di celle nella griglia (limita la complessità computazionale)
+
+# =============================================================================
+# 4. SPATIAL INTERPOLATION (ALGORITHMS)
+# =============================================================================
+
+# --- General Grid Settings ---
+# Maximum number of grid cells allowed. If the area requires more cells at
+# base resolution, the resolution (step size) is automatically increased.
 MAX_CELLS = 10000
-# Dimensione iniziale della cella in metri (risoluzione di base)
+
+# Base resolution target (in meters). The algorithm tries to respect this
+# unless MAX_CELLS is exceeded.
 BASE_CELL_SIZE = 10.0
 
-# --- IDW SETTINGS ---
-# Esponente per la ponderazione della distanza (più alto = influenza locale più forte)
+# --- Inverse Distance Weighting (IDW) Hyperparameters ---
+# Power parameter 'p'. Higher values assign greater influence to values 
+# closest to the interpolated point.
 IDW_POWER = 4
-# Distanza in metri oltre la quale il valore sfuma a zero
+
+# Distance (meters) from the nearest sensor where the value starts fading to zero.
 IDW_FADE_DISTANCE = 800
-# Parametro di smoothing per il fade-out (più alto = sfumatura più dolce)
+
+# Smoothing factor for the fade-out curve. Higher = smoother transition.
 IDW_FADE_SMOOTHING = 5.0
 
-# --- AKIMA SETTINGS ---
-# Fattore per il buffer del Convex Hull (moltiplicatore della cell_size)
+# --- Akima Spline Hyperparameters ---
+# Buffer multiplier for the Convex Hull.
+# 3.0 means the interpolation area extends 3x the cell size beyond the hull.
 AKIMA_HULL_BUFFER_FACTOR = 3.0
-# Numero di punti di controllo per le spline (righe/colonne)
+
+# Number of control points for the 1D spline interpolation rows/cols.
 AKIMA_SPLINE_POINTS = 5
-# Numero di vicini (k) per la ricerca cKDTree
+
+# Number of nearest neighbors (k) used in the cKDTree query.
 AKIMA_K_NEIGHBORS = 6
-# Esponente per la ponderazione inversa della distanza nel pre-calcolo Akima
+
+# Inverse distance weight power used during the Akima pre-calculation step.
 AKIMA_WEIGHT_POWER = 3.5
 
-# --- POST PROCESSING ---
-# Deviazione standard per il filtro Gaussiano finale
+
+# =============================================================================
+# 5. POST-PROCESSING
+# =============================================================================
+
+# Standard deviation (sigma) for the Gaussian Filter applied to the final grid.
+# Used to smooth out sharp artifacts from the interpolation.
 GAUSSIAN_SIGMA = 1.5
 
-# --- IOT DEVICE & UPLOAD SETTINGS ---
-# URL per il Context Broker e filtri
-ORION_BASE_URL = "https://www.snap4city.org/orionfilter"
-DEFAULT_BROKER = "orionUNIFI"
 
-# Chiavi API hardcodate (Legacy)
+# =============================================================================
+# 6. IOT DEVICE REGISTRATION & UPLOAD
+# =============================================================================
+
+# Orion Context Broker endpoints.
+ORION_BASE_URL = "https://www.snap4city.org/orionfilter"
+
+# Legacy API Keys for IoT Directory authentication.
 IOT_K1 = "cdfc46e7-75fd-46c5-b11e-04e231b08f37"
 IOT_K2 = "24f146b3-f2e8-43b8-b29f-0f9f1dd6cac5"
 
-# Parametri di default del Device
+# --- Device Metadata Templates ---
 DEVICE_PRODUCER = "DISIT"
 DEVICE_MODEL_TYPE = "Heatmap"
 DEVICE_MODEL_KIND = "sensor"
-DEVICE_MODEL_FREQ = "600"
+DEVICE_MODEL_FREQ = "600"    # Refresh rate in seconds
 DEVICE_MODEL_FORMAT = "json"
 
-# Endpoint interni per il salvataggio della griglia (spesso diversi in dev/prod)
-# Nota: Questi IP interni (192.168...) dovrebbero essere sovrascrivibili via env var
+# --- Internal Backend Endpoints ---
+# These URLs point to internal cluster services for high-performance writing.
+# They are typically accessible only from within the VPN/Cluster network.
 HEATMAP_INSERT_URL = "http://192.168.0.59:8000/insertArray"
 HEATMAP_SETMAP_URL = "http://192.168.0.59/setMap.php"
 
-# Headers standard
+# Standard Headers
 JSON_HEADER = {"Content-Type": "application/json"}

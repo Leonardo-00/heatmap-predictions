@@ -7,7 +7,7 @@ import requests
 import pandas as pd
 import logging
 from ..helper import write_log, parse_from_date, round_time
-import config
+import logic.config as config
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def fetch_sensor_data(service_uri, from_date_time, to_date_time, access_token):
     """
     # Handle relative date parsing (e.g., "1-day" -> calculated ISO date)
     parsed_start = parse_from_date(from_date_time, to_date_time)
-    start_time = parsed_start.strftime(config.DATE_FORMAT_API) if parsed_start else from_date_time
+    start_time = parsed_start.strftime(config.DATE_FORMAT) if parsed_start else from_date_time
 
     base_url = os.getenv("BASE_URL", config.SNAP4CITY_BASE_URL)
     api_url = (

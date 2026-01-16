@@ -19,7 +19,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from pyproj import Transformer
-import config
+import logic.config as config
 
 # --- Internal Module Imports ---
 from .data_upload import upload_heatmap_to_snap4city, save_interpolated_data, create_interpolated_heatmap

@@ -11,7 +11,7 @@ from scipy.spatial import cKDTree
 from scipy.ndimage import gaussian_filter
 from scipy.interpolate import Akima1DInterpolator
 from shapely import contains_xy
-import config
+import logic.config as config
 
 # Standard logging configuration
 logger = logging.getLogger(__name__)

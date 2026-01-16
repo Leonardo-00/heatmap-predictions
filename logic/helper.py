@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from pyproj import Transformer
 from shapely.geometry import box
+import logic.config as config
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def date_time_to_ISO(dt_obj):
     """
     return dt_obj.strftime('%Y-%m-%dT%H:%M:%S%z')
 
-def is_date(date_str, date_format="%Y-%m-%dT%H:%M:%S"):
+def is_date(date_str, date_format=config.DATE_FORMAT):
     """
     Validates if a string matches the specified date format.
     
@@ -178,7 +179,7 @@ def parse_from_date(from_date, to_date):
         datetime: Calculated start datetime or None if format is not relative.
     """
     try:
-        to_date_dt = datetime.strptime(to_date, "%Y-%m-%dT%H:%M:%S")
+        to_date_dt = datetime.strptime(to_date, config.DATE_FORMAT)
         match = re.match(r"(\d+)-(hours|day)", from_date)
         if not match:
             return None
