@@ -111,7 +111,7 @@ def generate_heatmap(params: dict):
     to_date_time = params.get("to_date_time")
     token = params.get("token")
     heat_map_model_name = params.get("heat_map_model_name")
-    model_method = params.get("model", config.DEFAULT_MODEL)
+    model_method = params.get("model")
 
     # --- Initial Logging & Validation ---
     logger.debug("--------- CHECK ON PARAMETERS START ---------")
