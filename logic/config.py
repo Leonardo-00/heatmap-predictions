@@ -24,7 +24,7 @@ CRS_LATLON = "EPSG:4326"
 # Flags controlling the generation workflow.
 DEFAULT_CLUSTERED = 0      # 0: Generate standard heatmap, 1: Generate clustered view.
 DEFAULT_FILE_FLAG = 0      # 0: Save to Database only, 1: Generate physical file on server.
-DEFAULT_BROKER = None      # None: Let backend decide, or specify 'orionUNIFI' etc.
+DEFAULT_BROKER = "orionUNIFI"      # Default Context Broker tenant.
 
 # Logic threshold: Minimum number of valid sensors required to attempt interpolation.
 # If fewer sensors are found, the process aborts to avoid statistical errors.
